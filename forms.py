@@ -428,7 +428,7 @@ def render_input_form(df, gc):
                     input_vals[f"_uploaded_file_{c}"] = uploaded_file
                     input_vals[f"_column_name_{c}"] = c
                     # Preview gambar
-                    st.image(uploaded_file, caption=f"Preview {c}", use_column_width=True)
+                    st.image(uploaded_file, caption=f"Preview {c}", use_container_width=True)
                 input_vals[c] = ""  # Set empty dulu, akan diisi URL setelah upload
                 continue
 
