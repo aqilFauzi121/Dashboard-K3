@@ -253,7 +253,7 @@ def get_user_credentials_oauth() -> Optional[Union[OAuthCredentials, BaseCredent
             with open(TOKEN_FILE, "w", encoding="utf-8") as f:
                 f.write(creds.to_json())
         except Exception as e:
-            # tidak fatal — hanya beri tahu user
+            # tidak fatal â€" hanya beri tahu user
             st.warning(f"Gagal menyimpan token ke {TOKEN_FILE}: {e}")
 
     return creds
@@ -316,12 +316,22 @@ def upload_to_drive_oauth_only(local_path: str, folder_id: Optional[str], file_n
         return None
 
 def save_uploaded_file(uploaded_file) -> Optional[str]:
+    """
+    Simpan uploaded file ke direktori sementara dan return path string
+    """
     try:
         os.makedirs("temp_images", exist_ok=True)
-        file_path = os.path.join("temp_images", uploaded_file.name)
-        with open(file_path, "wb") as f:
-            f.write(uploaded_file.getbuffer())
-        return file_path
+        
+        # Pastikan uploaded_file adalah UploadedFile object, bukan AttrDict
+        if hasattr(uploaded_file, 'name') and hasattr(uploaded_file, 'getbuffer'):
+            file_path = os.path.join("temp_images", uploaded_file.name)
+            with open(file_path, "wb") as f:
+                f.write(uploaded_file.getbuffer())
+            return file_path
+        else:
+            st.error("Format file upload tidak valid")
+            return None
+            
     except Exception as e:
         st.error(f"Gagal menyimpan gambar: {e}")
         return None
@@ -361,7 +371,12 @@ def _generate_file_name(uploaded_file, column_name: str, input_vals: Dict) -> st
     identifier = re.sub(r'[<>:"/\\|?*]', '_', identifier)
     
     # Format nama file: {identifier}_{column_name}_{original_filename}
-    original_name = uploaded_file.name
+    # Pastikan kita mendapatkan nama file yang benar
+    if hasattr(uploaded_file, 'name'):
+        original_name = uploaded_file.name
+    else:
+        original_name = "unknown_file"
+        
     final_name = f"{identifier}_{column_name}_{original_name}"
     
     return final_name
@@ -434,11 +449,14 @@ def render_input_form(df, gc):
             if "dokumentasi" in cl:
                 uploaded_file = st.file_uploader(f"Upload {c} (jpg, png, jpeg)", type=["jpg", "png", "jpeg"], key=f"upload_{c}")
                 if uploaded_file:
-                    # Simpan nilai file untuk diproses nanti setelah semua input selesai
+                    # Simpan reference ke file untuk diproses nanti setelah semua input selesai
                     input_vals[f"_uploaded_file_{c}"] = uploaded_file
                     input_vals[f"_column_name_{c}"] = c
                     # Preview gambar
-                    st.image(uploaded_file, caption=f"Preview {c}", use_column_width=True)
+                    try:
+                        st.image(uploaded_file, caption=f"Preview {c}", use_column_width=True)
+                    except Exception as e:
+                        st.warning(f"Tidak dapat menampilkan preview: {e}")
                 input_vals[c] = ""  # Set empty dulu, akan diisi URL setelah upload
                 continue
 
@@ -531,7 +549,7 @@ def render_input_form(df, gc):
                     if f"_uploaded_file_{col}" in input_vals and input_vals[f"_uploaded_file_{col}"] is not None:
                         uploaded_file = input_vals[f"_uploaded_file_{col}"]
                         
-                        # Simpan file sementara
+                        # Simpan file sementara - PASTIKAN uploaded_file adalah object yang benar
                         file_path = save_uploaded_file(uploaded_file)
                         if file_path:
                             try:
@@ -539,6 +557,7 @@ def render_input_form(df, gc):
                                 creds = get_user_credentials_oauth()
                                 if not creds:
                                     st.error("Gagal mendapatkan kredensial OAuth untuk upload")
+                                    input_vals[col] = ""
                                     continue
                                     
                                 service = build('drive', 'v3', credentials=creds)
@@ -562,7 +581,8 @@ def render_input_form(df, gc):
                             finally:
                                 # Hapus file sementara
                                 try:
-                                    os.remove(file_path)
+                                    if os.path.exists(file_path):
+                                        os.remove(file_path)
                                 except Exception:
                                     pass
                         else:
@@ -595,6 +615,14 @@ def render_input_form(df, gc):
                     row.append(input_vals.get(col, ""))
                 else:
                     row.append(input_vals.get(col, ""))
+
+            # Tambah ke Google Sheets
+            try:
+                append_row(gc, row)
+                st.success("Data berhasil ditambahkan ke Google Sheets!")
+            except Exception as e:
+                st.error(f"Gagal menambah data ke Sheets: {e}")
+                return
 
             # update session_state.df lokal (append satu row) supaya peta diperbarui
             try:
@@ -632,9 +660,7 @@ def render_input_form(df, gc):
                     pass
 
             except Exception as e:
-                st.warning(f"Baris sudah ditambahkan ke Sheets, namun terjadi error saat update tampilan lokal: {e}")
-
-            st.success("Baris berhasil ditambahkan ke Google Sheets (peta diperbarui secara lokal).")
+                st.warning(f"Data berhasil ditambahkan ke Sheets, namun terjadi error saat update tampilan lokal: {e}")
 
             # tampilkan ringkasan tanggal
             date_summary = []
