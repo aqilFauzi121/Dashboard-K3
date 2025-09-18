@@ -1,6 +1,5 @@
 # forms.py
-import pathlib
-import uuid
+
 import os
 import json
 import tempfile
@@ -282,248 +281,47 @@ def create_folder_if_not_exists_oauth(service, parent_folder_id, folder_name):
         st.error(f"Gagal mengakses Drive untuk membuat folder: {e}")
         raise
 
-def ensure_file_path(obj, dest_dir="temp_images") -> Optional[str]:
-    try:
-        os.makedirs(dest_dir, exist_ok=True)
-
-        # Already a path
-        if isinstance(obj, (str, bytes, os.PathLike)):
-            return str(obj)
-
-        # Streamlit UploadedFile: has getbuffer() and name
-        if hasattr(obj, "getbuffer") and hasattr(obj, "name"):
-            filename = getattr(obj, "name") or f"upload_{uuid.uuid4().hex}"
-            path = os.path.join(dest_dir, filename)
-            with open(path, "wb") as f:
-                f.write(obj.getbuffer())
-            return path
-
-        # file-like object with read()
-        if hasattr(obj, "read"):
-            filename = getattr(obj, "name", None) or f"upload_{uuid.uuid4().hex}"
-            path = os.path.join(dest_dir, filename)
-            content = obj.read()
-            if isinstance(content, str):
-                content = content.encode("utf-8")
-            with open(path, "wb") as f:
-                f.write(content)
-            # if the file-like was a stream that was consumed, we still have the file on disk
-            return path
-
-        # dict-like / AttrDict: try common keys
-        if isinstance(obj, dict) or hasattr(obj, "to_dict") or hasattr(obj, "items"):
-            # get name
-            name = None
-            # try both dict style and attribute style
-            try:
-                if isinstance(obj, dict):
-                    name = obj.get("name") or obj.get("filename") or obj.get("file_name")
-                else:
-                    name = getattr(obj, "name", None) or getattr(obj, "filename", None)
-            except Exception:
-                name = None
-            name = name or f"upload_{uuid.uuid4().hex}"
-
-            # get content/data
-            content = None
-            for key in ("content", "data", "file", "body", "raw"):
-                try:
-                    if isinstance(obj, dict):
-                        content = obj.get(key)
-                    else:
-                        content = getattr(obj, key, None)
-                except Exception:
-                    content = None
-                if content:
-                    break
-
-            # If content is still None, maybe obj itself has getbuffer
-            if content is None and hasattr(obj, "getbuffer"):
-                content = obj.getbuffer()
-
-            if content is None:
-                # give informative debug
-                st.error(f"[ensure_file_path] Tidak dapat mengekstrak 'content' dari objek bertipe {type(obj)}. Keys: {getattr(obj, 'keys', lambda: 'no-keys')()}")
-                return None
-
-            if hasattr(content, "read"):
-                content = content.read()
-            if isinstance(content, str):
-                content = content.encode("utf-8")
-
-            path = os.path.join(dest_dir, name)
-            with open(path, "wb") as f:
-                f.write(content)
-            return path
-
-        # unsupported type
-        st.error(f"[ensure_file_path] Unsupported uploaded object type: {type(obj)}")
-        return None
-
-    except Exception as e:
-        st.error(f"[ensure_file_path] Gagal menulis file: {e} (type: {type(obj)})")
-        return None
-
-def upload_to_drive_oauth_only(local_path_or_file: Union[str, Any], folder_id: Optional[str], file_name: str) -> Optional[str]:
-    tmp_to_cleanup = None
+def upload_to_drive_oauth_only(local_path: str, folder_id: Optional[str], file_name: str) -> Optional[str]:
+    """
+    Upload file menggunakan OAuth user credentials saja
+    """
     try:
         creds = get_user_credentials_oauth()
         if not creds:
             st.error("Gagal mendapatkan kredensial OAuth")
             return None
-
-        # Tentukan path fisik yang akan di-upload
-        if isinstance(local_path_or_file, (str, bytes, os.PathLike)):
-            path_to_upload = str(local_path_or_file)
-        else:
-            # buat temporary file dan tulis isi bytesnya
-            tmp = tempfile.NamedTemporaryFile(delete=False)
-            tmp_to_cleanup = tmp.name
-            # jika object punya getbuffer()
-            if hasattr(local_path_or_file, "getbuffer"):
-                tmp.write(local_path_or_file.getbuffer())
-            elif hasattr(local_path_or_file, "read"):
-                content = local_path_or_file.read()
-                if isinstance(content, str):
-                    content = content.encode("utf-8")
-                tmp.write(content)
-            elif isinstance(local_path_or_file, dict) or hasattr(local_path_or_file, "to_dict"):
-                # coba beberapa key umum
-                content = None
-                for key in ("content", "data", "file", "body"):
-                    try:
-                        if isinstance(local_path_or_file, dict):
-                            content = local_path_or_file.get(key)
-                        else:
-                            content = getattr(local_path_or_file, key, None)
-                    except Exception:
-                        content = None
-                    if content:
-                        break
-                if content is None and hasattr(local_path_or_file, "getbuffer"):
-                    content = local_path_or_file.getbuffer()
-                if content is None:
-                    tmp.close()
-                    os.unlink(tmp.name)
-                    st.error(f"Tidak dapat mengekstrak isi file untuk upload (tipe: {type(local_path_or_file)})")
-                    return None
-                if hasattr(content, "read"):
-                    content = content.read()
-                if isinstance(content, str):
-                    content = content.encode("utf-8")
-                tmp.write(content)
-            else:
-                tmp.close()
-                os.unlink(tmp.name)
-                st.error(f"Unsupported file object for upload: {type(local_path_or_file)}")
-                return None
-            tmp.flush()
-            tmp.close()
-            path_to_upload = tmp.name
-
+            
         service = build("drive", "v3", credentials=creds)
 
+        # Type hint meta agar Pylance tahu parents boleh list
         meta: Dict[str, Union[str, List[str]]] = {"name": file_name}
+
         if folder_id:
             meta["parents"] = [folder_id]
 
-        media = MediaFileUpload(path_to_upload, resumable=True)
+        media = MediaFileUpload(local_path, resumable=True)
         file = service.files().create(
-            body=meta, media_body=media, fields="id, parents"
+            body=meta,
+            media_body=media,
+            fields="id, parents"
         ).execute()
 
+        # Return URL format
         file_id = file.get("id")
         if file_id:
             return f"https://drive.google.com/uc?id={file_id}"
         return None
-
     except Exception as e:
         st.error(f"Gagal upload file menggunakan OAuth: {e}")
         return None
 
-    finally:
-        # cleanup temporary file jika dibuat
-        if tmp_to_cleanup:
-            try:
-                os.remove(tmp_to_cleanup)
-            except Exception:
-                pass
-
 def save_uploaded_file(uploaded_file) -> Optional[str]:
     try:
         os.makedirs("temp_images", exist_ok=True)
-
-        # Jika sudah path-like, kembalikan stringnya
-        if isinstance(uploaded_file, (str, bytes, os.PathLike)):
-            return str(uploaded_file)
-
-        # Streamlit UploadedFile: punya .name dan .getbuffer()
-        if hasattr(uploaded_file, "getbuffer") and hasattr(uploaded_file, "name"):
-            file_path = os.path.join("temp_images", uploaded_file.name)
-            with open(file_path, "wb") as f:
-                f.write(uploaded_file.getbuffer())
-            return file_path
-
-        # Jika objek file-like (mis. punya read())
-        if hasattr(uploaded_file, "read"):
-            # Name may or may not exist
-            name = getattr(uploaded_file, "name", None) or "uploaded_file"
-            file_path = os.path.join("temp_images", name)
-            with open(file_path, "wb") as f:
-                # read() bisa mengembalikan bytes
-                content = uploaded_file.read()
-                # jika content adalah str, encode dulu
-                if isinstance(content, str):
-                    content = content.encode("utf-8")
-                f.write(content)
-            return file_path
-
-        # Jika dict-like / AttrDict (coba ekstrak 'name' dan 'content' / 'data')
-        if isinstance(uploaded_file, dict) or hasattr(uploaded_file, "to_dict"):
-            # akses dengan .get bila dict, atau attribute jika AttrDict
-            try:
-                name = uploaded_file.get("name") if isinstance(uploaded_file, dict) else getattr(uploaded_file, "name", None)
-            except Exception:
-                name = None
-            name = name or "uploaded_file"
-
-            # ambil data bytes
-            content = None
-            # common keys
-            for key in ("content", "data", "file", "body"):
-                try:
-                    if isinstance(uploaded_file, dict):
-                        content = uploaded_file.get(key)
-                    else:
-                        content = getattr(uploaded_file, key, None)
-                except Exception:
-                    content = None
-                if content:
-                    break
-
-            if content is None:
-                # mungkin AttrDict menyimpan stream di .getbuffer
-                if hasattr(uploaded_file, "getbuffer"):
-                    content = uploaded_file.getbuffer()
-
-            if content is None:
-                st.error(f"Tidak dapat mengekstrak isi file dari objek: {type(uploaded_file)}")
-                return None
-
-            # jika content adalah str -> encode, jika file-like -> read
-            if hasattr(content, "read"):
-                content = content.read()
-            if isinstance(content, str):
-                content = content.encode("utf-8")
-
-            file_path = os.path.join("temp_images", name)
-            with open(file_path, "wb") as f:
-                f.write(content)
-            return file_path
-
-        st.error(f"Unsupported uploaded_file type: {type(uploaded_file)}")
-        return None
-
+        file_path = os.path.join("temp_images", uploaded_file.name)
+        with open(file_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+        return file_path
     except Exception as e:
         st.error(f"Gagal menyimpan gambar: {e}")
         return None
@@ -640,7 +438,7 @@ def render_input_form(df, gc):
                     input_vals[f"_uploaded_file_{c}"] = uploaded_file
                     input_vals[f"_column_name_{c}"] = c
                     # Preview gambar
-                    st.image(uploaded_file, caption=f"Preview {c}", use_container_width=True)
+                    st.image(uploaded_file, caption=f"Preview {c}", use_column_width=True)
                 input_vals[c] = ""  # Set empty dulu, akan diisi URL setelah upload
                 continue
 
