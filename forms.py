@@ -28,7 +28,7 @@ MAIN_FOLDER_ID = st.secrets["MAIN_FOLDER_ID"]  # Fixed: access from root level
 
 # ----- OAuth (user) config -----
 # Ambil dari secrets instead of file
-TOKEN_FILE = "token_user.json"               # file token yang akan dibuat otomatis
+TOKEN_FILE = st.secrets["token_user"]               # file token yang akan dibuat otomatis
 
 SCOPES_USER = [
     "https://www.googleapis.com/auth/drive.file",
