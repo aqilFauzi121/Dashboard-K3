@@ -113,32 +113,6 @@ def main():
     with col_info:
         if data_changed:
             st.success("Data ter-update otomatis dari Sheets")
-        
-        # Tambahkan debug button
-        if st.button("Debug: Show Raw Data"):
-            st.write("**Data dari Session State:**")
-            st.write(f"Jumlah baris: {len(st.session_state.df)}")
-            st.dataframe(st.session_state.df)
-            
-            # Baca data fresh langsung dari Sheets
-            st.write("**Data Fresh dari Google Sheets:**")
-            try:
-                fresh_df, error = load_sheets_data()
-                if fresh_df is not None:
-                    st.write(f"Jumlah baris: {len(fresh_df)}")
-                    st.dataframe(fresh_df)
-                    
-                    # Cek data yang berbeda
-                    if not fresh_df.equals(st.session_state.df):
-                        st.warning("Data session state berbeda dengan data di Sheets!")
-                else:
-                    st.error(f"Error loading fresh data: {error}")
-            except Exception as e:
-                st.error(f"Error: {e}")
-    
-    with col_info:
-        if data_changed:
-            st.success("Data ter-update otomatis dari Sheets")
 
     df_session = st.session_state.df
 
