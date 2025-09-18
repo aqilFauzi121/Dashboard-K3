@@ -198,9 +198,6 @@ def get_user_credentials_oauth() -> Optional[Union[OAuthCredentials, BaseCredent
             # st.secrets["token_user"] adalah mapping/dict
             info = dict(st.secrets["token_user"])
             
-            # Debug info untuk troubleshooting
-            st.write("Debug: token_user keys:", list(info.keys()))
-            
             # Pastikan scopes adalah list jika berupa string
             if "scopes" in info and isinstance(info["scopes"], str):
                 info["scopes"] = info["scopes"].split(",")
@@ -210,34 +207,27 @@ def get_user_credentials_oauth() -> Optional[Union[OAuthCredentials, BaseCredent
             
             # Test validitas credentials
             if creds and creds.valid:
-                st.success("Berhasil memuat credentials dari secrets")
                 return creds
                 
-        except Exception as e:
-            st.warning(f"Gagal memuat token dari secrets: {e}")
+        except Exception:
             creds = None
 
     # 2) Fallback: coba baca dari file token lokal (untuk development)
     if not creds and os.path.exists(TOKEN_FILE):
         try:
             creds = OAuthCredentials.from_authorized_user_file(TOKEN_FILE, SCOPES_USER)
-        except Exception as e:
-            st.warning(f"Gagal memuat token dari file: {e}")
+        except Exception:
             creds = None
 
     # 3) Jika ada creds tapi expired, coba refresh (jika ada refresh_token)
     if creds and getattr(creds, "expired", False) and getattr(creds, "refresh_token", None):
         try:
-            st.info("Refreshing expired credentials...")
             creds.refresh(Request())
-            st.success("Credentials berhasil di-refresh")
-        except Exception as e:
-            st.warning(f"Gagal refresh credentials: {e}")
+        except Exception:
             creds = None
 
     # 4) Jika masih belum ada creds valid -> lakukan OAuth flow interaktif
     if not creds or not creds.valid:
-        st.warning("Credentials tidak valid, memulai OAuth flow...")
         try:
             # Buat client_secret info dari secrets
             client_secret_info = {
@@ -261,7 +251,6 @@ def get_user_credentials_oauth() -> Optional[Union[OAuthCredentials, BaseCredent
                     temp_client_file, SCOPES_USER
                 )
                 creds = flow.run_local_server(port=0)
-                st.success("OAuth flow berhasil completed")
             finally:
                 try:
                     os.unlink(temp_client_file)
@@ -269,10 +258,10 @@ def get_user_credentials_oauth() -> Optional[Union[OAuthCredentials, BaseCredent
                     pass
 
         except KeyError as e:
-            st.error(f"Client secret tidak lengkap di secrets: {e}")
+            st.error(f"Konfigurasi OAuth tidak lengkap: {e}")
             return None
         except Exception as e:
-            st.error(f"Gagal menjalankan OAuth flow: {e}")
+            st.error(f"Gagal mengautentikasi: {e}")
             return None
 
     # 5) Simpan token ke file lokal jika berhasil (optional untuk backup)
@@ -280,9 +269,8 @@ def get_user_credentials_oauth() -> Optional[Union[OAuthCredentials, BaseCredent
         try:
             with open(TOKEN_FILE, "w", encoding="utf-8") as f:
                 f.write(creds.to_json())
-        except Exception as e:
-            # tidak fatal, hanya informasi
-            st.info(f"Info: Tidak dapat menyimpan token ke file lokal: {e}")
+        except Exception:
+            pass  # Tidak perlu menampilkan pesan error untuk ini
 
     return creds
 
@@ -482,7 +470,7 @@ def render_input_form(df, gc):
                     input_vals[f"_column_name_{c}"] = c
                     # Preview gambar
                     try:
-                        st.image(uploaded_file, caption=f"Preview {c}", use_container_width=True)
+                        st.image(uploaded_file, caption=f"Preview {c}", use_column_width=True)
                     except Exception as e:
                         st.warning(f"Tidak dapat menampilkan preview: {e}")
                 input_vals[c] = ""  # Set empty dulu, akan diisi URL setelah upload
@@ -572,49 +560,61 @@ def render_input_form(df, gc):
             auto_hex = risk_to_color_hex(level_value)
 
             # Process file uploads SETELAH semua input terkumpul - OAUTH ONLY
-            with st.spinner("Mengupload file dokumentasi menggunakan OAuth..."):
-                for col in df.columns:
-                    if f"_uploaded_file_{col}" in input_vals and input_vals[f"_uploaded_file_{col}"] is not None:
-                        uploaded_file = input_vals[f"_uploaded_file_{col}"]
-                        
-                        # Simpan file sementara - PASTIKAN uploaded_file adalah object yang benar
-                        file_path = save_uploaded_file(uploaded_file)
-                        if file_path:
-                            try:
-                                # Buat folder bulan menggunakan OAuth
-                                creds = get_user_credentials_oauth()
-                                if not creds:
-                                    st.error("Gagal mendapatkan kredensial OAuth untuk upload")
-                                    input_vals[col] = ""
-                                    continue
-                                    
-                                service = build('drive', 'v3', credentials=creds)
-                                month_folder = datetime.now().strftime('%B')
-                                month_folder_id = create_folder_if_not_exists_oauth(service, MAIN_FOLDER_ID, month_folder)
-                                
-                                # Generate nama file dengan data input yang sudah lengkap
-                                file_name = _generate_file_name(uploaded_file, col, input_vals)
-                                
-                                # Upload file menggunakan OAuth saja
-                                file_url = upload_to_drive_oauth_only(file_path, month_folder_id, file_name)
-                                if file_url:
-                                    input_vals[col] = file_url
-                                    st.success(f"File {col} berhasil diupload menggunakan OAuth")
-                                else:
-                                    st.warning(f"File {col} gagal diupload. Data akan disimpan tanpa lampiran.")
-                                    input_vals[col] = ""
-                            except Exception as e:
-                                st.error(f"Error upload file {col}: {e}")
+            upload_success = True
+            failed_uploads = []
+            
+            for col in df.columns:
+                if f"_uploaded_file_{col}" in input_vals and input_vals[f"_uploaded_file_{col}"] is not None:
+                    uploaded_file = input_vals[f"_uploaded_file_{col}"]
+                    
+                    # Simpan file sementara - PASTIKAN uploaded_file adalah object yang benar
+                    file_path = save_uploaded_file(uploaded_file)
+                    if file_path:
+                        try:
+                            # Buat folder bulan menggunakan OAuth
+                            creds = get_user_credentials_oauth()
+                            if not creds:
+                                failed_uploads.append(col)
                                 input_vals[col] = ""
-                            finally:
-                                # Hapus file sementara
-                                try:
-                                    if os.path.exists(file_path):
-                                        os.remove(file_path)
-                                except Exception:
-                                    pass
-                        else:
+                                continue
+                                
+                            service = build('drive', 'v3', credentials=creds)
+                            month_folder = datetime.now().strftime('%B')
+                            month_folder_id = create_folder_if_not_exists_oauth(service, MAIN_FOLDER_ID, month_folder)
+                            
+                            # Generate nama file dengan data input yang sudah lengkap
+                            file_name = _generate_file_name(uploaded_file, col, input_vals)
+                            
+                            # Upload file menggunakan OAuth saja
+                            file_url = upload_to_drive_oauth_only(file_path, month_folder_id, file_name)
+                            if file_url:
+                                input_vals[col] = file_url
+                            else:
+                                failed_uploads.append(col)
+                                input_vals[col] = ""
+                        except Exception:
+                            failed_uploads.append(col)
                             input_vals[col] = ""
+                        finally:
+                            # Hapus file sementara
+                            try:
+                                if os.path.exists(file_path):
+                                    os.remove(file_path)
+                            except Exception:
+                                pass
+                    else:
+                        failed_uploads.append(col)
+                        input_vals[col] = ""
+
+            # Tampilkan hasil upload hanya jika ada file yang diupload
+            uploaded_files = [col for col in df.columns if f"_uploaded_file_{col}" in input_vals]
+            if uploaded_files:
+                if not failed_uploads:
+                    st.success("Semua file berhasil diupload ke Google Drive")
+                elif len(failed_uploads) < len(uploaded_files):
+                    st.warning(f"Beberapa file gagal diupload: {', '.join(failed_uploads)}")
+                else:
+                    st.error("Semua file gagal diupload. Data akan disimpan tanpa lampiran.")
 
             # Bersihkan kunci sementara dari input_vals
             temp_keys = [k for k in input_vals.keys() if k.startswith("_uploaded_file_") or k.startswith("_column_name_")]
