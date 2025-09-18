@@ -1,5 +1,6 @@
 # forms.py
 import pathlib
+import uuid
 import os
 import json
 import tempfile
@@ -280,6 +281,88 @@ def create_folder_if_not_exists_oauth(service, parent_folder_id, folder_name):
     except HttpError as e:
         st.error(f"Gagal mengakses Drive untuk membuat folder: {e}")
         raise
+
+def ensure_file_path(obj, dest_dir="temp_images") -> Optional[str]:
+    try:
+        os.makedirs(dest_dir, exist_ok=True)
+
+        # Already a path
+        if isinstance(obj, (str, bytes, os.PathLike)):
+            return str(obj)
+
+        # Streamlit UploadedFile: has getbuffer() and name
+        if hasattr(obj, "getbuffer") and hasattr(obj, "name"):
+            filename = getattr(obj, "name") or f"upload_{uuid.uuid4().hex}"
+            path = os.path.join(dest_dir, filename)
+            with open(path, "wb") as f:
+                f.write(obj.getbuffer())
+            return path
+
+        # file-like object with read()
+        if hasattr(obj, "read"):
+            filename = getattr(obj, "name", None) or f"upload_{uuid.uuid4().hex}"
+            path = os.path.join(dest_dir, filename)
+            content = obj.read()
+            if isinstance(content, str):
+                content = content.encode("utf-8")
+            with open(path, "wb") as f:
+                f.write(content)
+            # if the file-like was a stream that was consumed, we still have the file on disk
+            return path
+
+        # dict-like / AttrDict: try common keys
+        if isinstance(obj, dict) or hasattr(obj, "to_dict") or hasattr(obj, "items"):
+            # get name
+            name = None
+            # try both dict style and attribute style
+            try:
+                if isinstance(obj, dict):
+                    name = obj.get("name") or obj.get("filename") or obj.get("file_name")
+                else:
+                    name = getattr(obj, "name", None) or getattr(obj, "filename", None)
+            except Exception:
+                name = None
+            name = name or f"upload_{uuid.uuid4().hex}"
+
+            # get content/data
+            content = None
+            for key in ("content", "data", "file", "body", "raw"):
+                try:
+                    if isinstance(obj, dict):
+                        content = obj.get(key)
+                    else:
+                        content = getattr(obj, key, None)
+                except Exception:
+                    content = None
+                if content:
+                    break
+
+            # If content is still None, maybe obj itself has getbuffer
+            if content is None and hasattr(obj, "getbuffer"):
+                content = obj.getbuffer()
+
+            if content is None:
+                # give informative debug
+                st.error(f"[ensure_file_path] Tidak dapat mengekstrak 'content' dari objek bertipe {type(obj)}. Keys: {getattr(obj, 'keys', lambda: 'no-keys')()}")
+                return None
+
+            if hasattr(content, "read"):
+                content = content.read()
+            if isinstance(content, str):
+                content = content.encode("utf-8")
+
+            path = os.path.join(dest_dir, name)
+            with open(path, "wb") as f:
+                f.write(content)
+            return path
+
+        # unsupported type
+        st.error(f"[ensure_file_path] Unsupported uploaded object type: {type(obj)}")
+        return None
+
+    except Exception as e:
+        st.error(f"[ensure_file_path] Gagal menulis file: {e} (type: {type(obj)})")
+        return None
 
 def upload_to_drive_oauth_only(local_path_or_file: Union[str, Any], folder_id: Optional[str], file_name: str) -> Optional[str]:
     tmp_to_cleanup = None
