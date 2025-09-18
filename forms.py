@@ -28,7 +28,7 @@ MAIN_FOLDER_ID = st.secrets["MAIN_FOLDER_ID"]  # Fixed: access from root level
 
 # ----- OAuth (user) config -----
 # Ambil dari secrets instead of file
-TOKEN_FILE = st.secrets["token_user"]               # file token yang akan dibuat otomatis
+TOKEN_FILE = st.secrets["token_user"]             # file token yang akan dibuat otomatis
 
 SCOPES_USER = [
     "https://www.googleapis.com/auth/drive.file",
@@ -192,45 +192,54 @@ def _color_swatch(hex_color: str, label: str = "Color (otomatis)"):
 def get_user_credentials_oauth() -> Optional[Union[OAuthCredentials, BaseCredentials]]:
     creds: Optional[Union[OAuthCredentials, BaseCredentials]] = None
 
-    # 1. Baca token file jika ada
+    # 1) Coba baca dari file token lokal (biar aman untuk development)
     if os.path.exists(TOKEN_FILE):
         try:
             creds = OAuthCredentials.from_authorized_user_file(TOKEN_FILE, SCOPES_USER)
         except Exception:
             creds = None
 
-    # 2. Refresh token jika expired
-    if creds and creds.expired and creds.refresh_token:
+    # 2) Jika belum ada creds, coba baca dari st.secrets (Streamlit Secrets)
+    if not creds and "token_user" in st.secrets:
+        try:
+            # st.secrets["token_user"] biasanya adalah mapping/dict
+            info = dict(st.secrets["token_user"])
+            # Beberapa value mungkin perlu conversion (scopes harus berupa list)
+            # from_authorized_user_info menerima sebuah dict sesuai format token JSON
+            creds = OAuthCredentials.from_authorized_user_info(info, SCOPES_USER)
+        except Exception:
+            creds = None
+
+    # 3) Jika ada creds tapi expired, coba refresh (jika ada refresh_token)
+    if creds and getattr(creds, "expired", False) and getattr(creds, "refresh_token", None):
         try:
             creds.refresh(Request())
         except Exception:
             creds = None
 
-    # 3. Jika belum ada creds valid, minta login OAuth
+    # 4) Jika masih belum ada creds valid -> lakukan OAuth flow interaktif
     if not creds or not creds.valid:
-        # Ambil client secret dari secrets.toml sesuai struktur Anda
         try:
             client_secret_info = {
                 "installed": dict(st.secrets["client_secret"])
             }
-            
+
             # Buat file temporary untuk client secret
             with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as tmp_file:
                 json.dump(client_secret_info, tmp_file)
                 temp_client_file = tmp_file.name
-            
+
             try:
                 flow = InstalledAppFlow.from_client_secrets_file(
                     temp_client_file, SCOPES_USER
                 )
                 creds = flow.run_local_server(port=0)
             finally:
-                # Hapus file temporary
                 try:
                     os.unlink(temp_client_file)
                 except Exception:
                     pass
-                    
+
         except KeyError:
             st.warning("Client secret tidak ditemukan di secrets.toml")
             return None
@@ -238,13 +247,14 @@ def get_user_credentials_oauth() -> Optional[Union[OAuthCredentials, BaseCredent
             st.error(f"Gagal menjalankan OAuth flow: {e}")
             return None
 
-    # 4. Simpan token jika ada method to_json()
+    # 5) Simpan token ke file lokal (so you can copy to secrets if needed)
     if creds and hasattr(creds, "to_json"):
         try:
             with open(TOKEN_FILE, "w", encoding="utf-8") as f:
                 f.write(creds.to_json())
         except Exception as e:
-            st.warning(f"Gagal menyimpan token: {e}")
+            # tidak fatal — hanya beri tahu user
+            st.warning(f"Gagal menyimpan token ke {TOKEN_FILE}: {e}")
 
     return creds
 
@@ -428,7 +438,7 @@ def render_input_form(df, gc):
                     input_vals[f"_uploaded_file_{c}"] = uploaded_file
                     input_vals[f"_column_name_{c}"] = c
                     # Preview gambar
-                    st.image(uploaded_file, caption=f"Preview {c}", use_container_width=True)
+                    st.image(uploaded_file, caption=f"Preview {c}", use_column_width=True)
                 input_vals[c] = ""  # Set empty dulu, akan diisi URL setelah upload
                 continue
 
