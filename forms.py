@@ -28,7 +28,7 @@ MAIN_FOLDER_ID = st.secrets["MAIN_FOLDER_ID"]  # Fixed: access from root level
 
 # ----- OAuth (user) config -----
 # Ambil dari secrets instead of file
-TOKEN_FILE = st.secrets["token_user"]             # file token yang akan dibuat otomatis
+TOKEN_FILE = "token_user.json"  # file token yang akan dibuat otomatis
 
 SCOPES_USER = [
     "https://www.googleapis.com/auth/drive.file",
@@ -192,36 +192,63 @@ def _color_swatch(hex_color: str, label: str = "Color (otomatis)"):
 def get_user_credentials_oauth() -> Optional[Union[OAuthCredentials, BaseCredentials]]:
     creds: Optional[Union[OAuthCredentials, BaseCredentials]] = None
 
-    # 1) Coba baca dari file token lokal (biar aman untuk development)
-    if os.path.exists(TOKEN_FILE):
+    # 1) Coba baca dari st.secrets (Streamlit Secrets) dulu
+    if "token_user" in st.secrets:
         try:
-            creds = OAuthCredentials.from_authorized_user_file(TOKEN_FILE, SCOPES_USER)
-        except Exception:
-            creds = None
-
-    # 2) Jika belum ada creds, coba baca dari st.secrets (Streamlit Secrets)
-    if not creds and "token_user" in st.secrets:
-        try:
-            # st.secrets["token_user"] biasanya adalah mapping/dict
+            # st.secrets["token_user"] adalah mapping/dict
             info = dict(st.secrets["token_user"])
-            # Beberapa value mungkin perlu conversion (scopes harus berupa list)
+            
+            # Debug info untuk troubleshooting
+            st.write("Debug: token_user keys:", list(info.keys()))
+            
+            # Pastikan scopes adalah list jika berupa string
+            if "scopes" in info and isinstance(info["scopes"], str):
+                info["scopes"] = info["scopes"].split(",")
+            
             # from_authorized_user_info menerima sebuah dict sesuai format token JSON
             creds = OAuthCredentials.from_authorized_user_info(info, SCOPES_USER)
-        except Exception:
+            
+            # Test validitas credentials
+            if creds and creds.valid:
+                st.success("Berhasil memuat credentials dari secrets")
+                return creds
+                
+        except Exception as e:
+            st.warning(f"Gagal memuat token dari secrets: {e}")
+            creds = None
+
+    # 2) Fallback: coba baca dari file token lokal (untuk development)
+    if not creds and os.path.exists(TOKEN_FILE):
+        try:
+            creds = OAuthCredentials.from_authorized_user_file(TOKEN_FILE, SCOPES_USER)
+        except Exception as e:
+            st.warning(f"Gagal memuat token dari file: {e}")
             creds = None
 
     # 3) Jika ada creds tapi expired, coba refresh (jika ada refresh_token)
     if creds and getattr(creds, "expired", False) and getattr(creds, "refresh_token", None):
         try:
+            st.info("Refreshing expired credentials...")
             creds.refresh(Request())
-        except Exception:
+            st.success("Credentials berhasil di-refresh")
+        except Exception as e:
+            st.warning(f"Gagal refresh credentials: {e}")
             creds = None
 
     # 4) Jika masih belum ada creds valid -> lakukan OAuth flow interaktif
     if not creds or not creds.valid:
+        st.warning("Credentials tidak valid, memulai OAuth flow...")
         try:
+            # Buat client_secret info dari secrets
             client_secret_info = {
-                "installed": dict(st.secrets["client_secret"])
+                "installed": {
+                    "client_id": st.secrets["client_secret"]["client_id"],
+                    "project_id": st.secrets["client_secret"]["project_id"], 
+                    "auth_uri": st.secrets["client_secret"]["auth_uri"],
+                    "token_uri": st.secrets["client_secret"]["token_uri"],
+                    "client_secret": st.secrets["client_secret"]["client_secret"],
+                    "redirect_uris": st.secrets["client_secret"]["redirect_uris"]
+                }
             }
 
             # Buat file temporary untuk client secret
@@ -234,27 +261,28 @@ def get_user_credentials_oauth() -> Optional[Union[OAuthCredentials, BaseCredent
                     temp_client_file, SCOPES_USER
                 )
                 creds = flow.run_local_server(port=0)
+                st.success("OAuth flow berhasil completed")
             finally:
                 try:
                     os.unlink(temp_client_file)
                 except Exception:
                     pass
 
-        except KeyError:
-            st.warning("Client secret tidak ditemukan di secrets.toml")
+        except KeyError as e:
+            st.error(f"Client secret tidak lengkap di secrets: {e}")
             return None
         except Exception as e:
             st.error(f"Gagal menjalankan OAuth flow: {e}")
             return None
 
-    # 5) Simpan token ke file lokal (so you can copy to secrets if needed)
+    # 5) Simpan token ke file lokal jika berhasil (optional untuk backup)
     if creds and hasattr(creds, "to_json"):
         try:
             with open(TOKEN_FILE, "w", encoding="utf-8") as f:
                 f.write(creds.to_json())
         except Exception as e:
-            # tidak fatal â€" hanya beri tahu user
-            st.warning(f"Gagal menyimpan token ke {TOKEN_FILE}: {e}")
+            # tidak fatal, hanya informasi
+            st.info(f"Info: Tidak dapat menyimpan token ke file lokal: {e}")
 
     return creds
 
