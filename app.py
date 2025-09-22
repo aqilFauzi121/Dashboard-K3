@@ -9,7 +9,7 @@ from forms import render_input_form
 import hashlib
 
 # Layout lebar
-st.set_page_config(page_title="Input Data & Map", layout="wide")
+st.set_page_config(page_title="Dashboard Monitoring Temuan K3", layout="wide")
 
 # ----------------- CSS -----------------
 css_path = Path(__file__).resolve().parent / "styles.css"
@@ -69,7 +69,7 @@ def load_sheets_data():
 
 # ----------------- MAIN APP -----------------
 def main():
-    st.title("Form Input & Map - terhubung Google Sheets")
+    st.title("Dashboard Monitoring Temuan K3")
 
     # Initialize session state untuk kontrol refresh
     if "last_data_hash" not in st.session_state:
