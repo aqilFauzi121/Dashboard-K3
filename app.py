@@ -7,9 +7,19 @@ from sheet_io import read_sheet_values
 from map_builder import make_map
 from forms import render_input_form
 import hashlib
+from PIL import Image
 
-# Layout lebar
-st.set_page_config(page_title="Dashboard Monitoring Temuan K3", layout="wide")
+BASE_DIR = Path(__file__).resolve().parent
+ASSETS_DIR = BASE_DIR / "assets"
+LOGO_PATH = ASSETS_DIR / "logo_pln.png"
+
+page_icon = Image.open(LOGO_PATH) if LOGO_PATH.exists() else None
+
+st.set_page_config(
+    page_title="Dashboard Monitoring Temuan K3",
+    page_icon=page_icon,
+    layout="wide",
+)
 
 # ----------------- CSS -----------------
 css_path = Path(__file__).resolve().parent / "styles.css"
