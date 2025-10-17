@@ -192,53 +192,85 @@ def _color_swatch(hex_color: str, label: str = "Color (otomatis)"):
 def get_user_credentials_oauth() -> Optional[Union[OAuthCredentials, BaseCredentials]]:
     creds: Optional[Union[OAuthCredentials, BaseCredentials]] = None
 
-    # 1) PRIORITAS UTAMA: Coba baca dari st.secrets
+    # 1) Coba baca dari st.secrets (Streamlit Secrets) dulu
     if "token_user" in st.secrets:
         try:
+            # st.secrets["token_user"] adalah mapping/dict
             info = dict(st.secrets["token_user"])
             
-            # Pastikan scopes adalah list
+            # Pastikan scopes adalah list jika berupa string
             if "scopes" in info and isinstance(info["scopes"], str):
                 info["scopes"] = info["scopes"].split(",")
             
+            # from_authorized_user_info menerima sebuah dict sesuai format token JSON
             creds = OAuthCredentials.from_authorized_user_info(info, SCOPES_USER)
             
-            # Test validitas
+            # Test validitas credentials
             if creds and creds.valid:
                 return creds
-            
-            # Jika expired tapi ada refresh_token, coba refresh
-            if creds and creds.expired and creds.refresh_token:
-                try:
-                    creds.refresh(Request())
-                    return creds
-                except Exception as e:
-                    st.error(f"Gagal refresh token: {e}")
-                    
-        except Exception as e:
-            st.error(f"Error membaca token dari secrets: {e}")
+                
+        except Exception:
             creds = None
 
-    # 2) Fallback: File lokal (hanya untuk development)
+    # 2) Fallback: coba baca dari file token lokal (untuk development)
     if not creds and os.path.exists(TOKEN_FILE):
         try:
             creds = OAuthCredentials.from_authorized_user_file(TOKEN_FILE, SCOPES_USER)
-            if creds and creds.valid:
-                return creds
         except Exception:
-            pass
+            creds = None
 
-    # 3) Jika tidak ada creds valid, tampilkan error
+    # 3) Jika ada creds tapi expired, coba refresh (jika ada refresh_token)
+    if creds and getattr(creds, "expired", False) and getattr(creds, "refresh_token", None):
+        try:
+            creds.refresh(Request())
+        except Exception:
+            creds = None
+
+    # 4) Jika masih belum ada creds valid -> lakukan OAuth flow interaktif
     if not creds or not creds.valid:
-        st.error("""
-        ⚠️ **Kredensial OAuth tidak tersedia atau tidak valid.**
-        
-        Fitur upload dokumentasi memerlukan token OAuth yang valid.
-        Silakan hubungi administrator untuk setup kredensial.
-        
-        Data akan tetap tersimpan, namun tanpa lampiran foto.
-        """)
-        return None
+        try:
+            # Buat client_secret info dari secrets
+            client_secret_info = {
+                "installed": {
+                    "client_id": st.secrets["client_secret"]["client_id"],
+                    "project_id": st.secrets["client_secret"]["project_id"], 
+                    "auth_uri": st.secrets["client_secret"]["auth_uri"],
+                    "token_uri": st.secrets["client_secret"]["token_uri"],
+                    "client_secret": st.secrets["client_secret"]["client_secret"],
+                    "redirect_uris": st.secrets["client_secret"]["redirect_uris"]
+                }
+            }
+
+            # Buat file temporary untuk client secret
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as tmp_file:
+                json.dump(client_secret_info, tmp_file)
+                temp_client_file = tmp_file.name
+
+            try:
+                flow = InstalledAppFlow.from_client_secrets_file(
+                    temp_client_file, SCOPES_USER
+                )
+                creds = flow.run_local_server(port=0)
+            finally:
+                try:
+                    os.unlink(temp_client_file)
+                except Exception:
+                    pass
+
+        except KeyError as e:
+            st.error(f"Konfigurasi OAuth tidak lengkap: {e}")
+            return None
+        except Exception as e:
+            st.error(f"Gagal mengautentikasi: {e}")
+            return None
+
+    # 5) Simpan token ke file lokal jika berhasil (optional untuk backup)
+    if creds and hasattr(creds, "to_json"):
+        try:
+            with open(TOKEN_FILE, "w", encoding="utf-8") as f:
+                f.write(creds.to_json())
+        except Exception:
+            pass  # Tidak perlu menampilkan pesan error untuk ini
 
     return creds
 
